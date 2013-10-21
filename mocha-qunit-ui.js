@@ -2223,100 +2223,139 @@ var Test = Mocha.Test;
 var QUnit = global.QUnit;
 var assert = QUnit.assert;
 var config = QUnit.config;
+var jsDump = QUnit.jsDump;
+
+function normalizeTestArgs(fn) {
+  return function(title, expect, test) {
+    if (typeof expect == "function") {
+      test = expect;
+      expect = 0;
+    }
+
+    return fn.call(this, title, expect, test);
+  };
+}
+
+function wrapTestFunction(test, wrapper) {
+  var result = function(done) {
+    return wrapper.call(this, test, done);
+  };
+  result.toString = test.toString.bind(test);
+  return result;
+}
+
+function spy(object, methodName, handlers) {
+  var orig = object[methodName];
+  var before = handlers.before;
+  var after = handlers.after;
+  var spied;
+
+  if (orig.__restore) {
+    orig = orig.__restore();
+  }
+
+  spied = object[methodName] = function() {
+    var result;
+    if (before) {
+      before.apply(this, arguments);
+    }
+
+    result = orig.apply(this, arguments);
+
+    if (after) {
+      after.apply(this, arguments);
+    }
+
+    return result;
+  };
+  spied.__restore = function() {
+    return object[methodName] = orig;
+  };
+
+  return spied;
+}
+
+function wrapAssert(qTest, qTestToStr, name, makeMessage) {
+  var assertions = config.current.assertions;
+  var pushSpy;
+  spy(assert, name, {
+    // Custom assertions work by invoking `QUnit.push`. Because QUnit's
+    // built-in assertions also use this method, the spy should be temporarily
+    // disabled while the build-in assertions run.
+    before: function() {
+      pushSpy = QUnit.push;
+      if (pushSpy.__restore) {
+        pushSpy.__restore();
+      }
+    },
+    after: function(expected, actual, description) {
+      var assertion = assertions[assertions.length - 1];
+      var testFn, qAssert;
+
+      if (name === 'ok') {
+        description = actual;
+      }
+
+      testFn = function() {
+        if (!assertion.result) {
+          throw new Error(makeMessage(
+            jsDump.parse(expected),
+            jsDump.parse(actual)
+          ));
+        }
+      };
+
+      testFn.toString = qTestToStr;
+      qAssert = new Test(description, testFn);
+
+      qTest.addTest(qAssert);
+
+      QUnit.push = pushSpy;
+    }
+  });
+}
+
+// Because QUnit allows for multiple assertion failures, a QUnit "test" must
+// be implemented as a Mocha "suite" which redefines assertions to create
+// individual tests dynamically.
+function makeQTest(moduleSuite, title, expect, qTestFn) {
+  var qTest = Suite.create(moduleSuite, title);
+  var qTestToStr = qTestFn.toString.bind(qTestFn);
+
+  config.current = { assertions: [] };
+
+  wrapAssert(qTest, qTestToStr, 'ok', function(actual) {
+    return 'Expected ' + actual + ' to be okay';
+  });
+
+  wrapAssert(qTest, qTestToStr, 'deepEqual', function(expected, actual) {
+    return 'Expected ' + expected + ' to deeply equal ' + actual;
+  });
+
+  spy(QUnit, 'push', {
+    after: function(result, actual, expected, message) {
+      var testFn = function() {
+        if (!result) {
+          throw new Error(
+            'Expected: ' + jsDump.parse(expected) +
+            ' Actual: ' + jsDump.parse(actual)
+          );
+        }
+      };
+      var qAssert;
+
+      testFn.toString = qTestToStr;
+      qAssert = new Test(message, testFn);
+
+      qTest.addTest(qAssert);
+    }
+  });
+
+  return qTest;
+}
 
 var ui = function(suite) {
   var suites = [suite];
-
-  var inModule = false;
-  var firstTest = true;
-  var expectedAssertions;
-  var deferrals = 0;
-  var currentDoneFn;
-  var checkingDeferrals;
-
-  function setContext(context) {
-    config.current = {
-      testEnvironment: context,
-      assertions: []
-    };
-    QUnit.current_testEnvironment = context;
-  }
-
-  // Ensure that all the assertions declared in the current context have
-  // passed. This behavior differs somewhat from Mocha because (like QUnit)
-  // more than one assertion may fail in a given test. Mocha can only report
-  // one failure per test, so report the first failure.
-  function checkAssertions() {
-    try {
-      config.current.assertions.forEach(function(assertion) {
-        if (!assertion.result) {
-          throw new Error(assertion.message);
-        }
-      });
-    } catch(err) {
-      return err;
-    }
-  }
-
-  var secret = {};
-  var logCallbacks = {};
-  var logFnNames = [
-    "begin", "done", "moduleStart", "moduleDone", "testStart", "testDone",
-    "log"
-  ];
-  var log = function(name, context) {
-    logCallbacks[name].forEach(function(callback) {
-      callback.call(QUnit, context);
-    });
-  };
-  logFnNames.forEach(function(fnName) {
-    var callbacks = logCallbacks[fnName] = [];
-    QUnit[fnName] = function(callback) {
-      if (typeof callback !== "function") { return; }
-      callbacks.push(callback);
-    };
-  });
-
-  var spy = function(obj, name, fn) {
-    var orig = obj[name];
-    if (orig.reset) {
-      orig = orig.reset();
-    }
-    var spied = obj[name] = function() {
-      var res = orig.apply(this, arguments);
-      fn.apply(this, arguments);
-      return res;
-    };
-    spied.reset = function() {
-      obj[name] = orig;
-      return orig;
-    };
-  };
-  QUnit.log(function(details) {
-    var assertions = config.current.assertions;
-    var last = assertions[assertions.length - 1];
-    last.message = details.message;
-  });
-  var setLog = function(logDetails) {
-    spy(QUnit, "push", function(result, actual, expected, message) {
-      log("log", {
-        name: logDetails.name,
-        module: logDetails.module,
-        result: result,
-        message: message,
-        actual: actual,
-        expected: expected
-      });
-    });
-    spy(assert, "ok", function(result, message) {
-      log("log", {
-        name: logDetails.name,
-        module: logDetails.module,
-        result: result,
-        message: message
-      });
-    });
-  };
 
   suite.on('pre-require', function(context) {
 
@@ -2328,161 +2367,7 @@ var ui = function(suite) {
       if (suites.length > 1) suites.shift();
       var suite = Suite.create(suites[0], title);
       suites.unshift(suite);
-      var originalFixture = document.getElementById("qunit-fixture").innerHTML;
-      var assertionCounts = {
-        total: 0,
-        passed: 0,
-        failed: 0
-      };
-
-      suite.beforeAll(function() {
-        log("moduleStart", { name: title });
-      });
-
-      suite.afterAll(function() {
-        log("moduleDone", {
-          name: title,
-          total: assertionCounts.total,
-          passed: assertionCounts.passed,
-          failed: assertionCounts.failed
-        });
-      });
-
-      suite.beforeEach(function() {
-        checkingDeferrals = false;
-        document.getElementById("qunit-fixture").innerHTML = originalFixture;
-        deferrals = 0;
-        inModule = true;
-        setContext(this);
-
-        var logData = { name: this.currentTest.title, module: title };
-        setLog(logData);
-
-        log("testStart", logData);
-      });
-
-      if (opts) {
-        suite.beforeEach(function() { for (var k in opts) this[k] = opts[k] });
-        if (opts.setup) {
-          suite.beforeEach(function(done) {
-            stop();
-            currentDoneFn = done;
-            opts.setup.call(this, assert);
-            start();
-          });
-        }
-        if (opts.teardown) {
-          suite.afterEach(function(done) {
-            stop();
-            currentDoneFn = done;
-            opts.teardown.call(this, assert);
-            start();
-          });
-        }
-      }
-      suite.afterEach(function(done) {
-        config.current.assertions.forEach(function(assertion) {
-          var state = test.state;
-          assertionCounts.total++;
-          if (assertion.result) {
-            assertionCounts.passed++;
-          } else {
-            assertionCounts.failed++;
-          }
-        });
-
-        log("testDone", {
-          module: title,
-          total: assertionCounts.total,
-          passed: assertionCounts.passed,
-          failed: assertionCounts.failed,
-          name: this.currentTest.title,
-          duration: this.currentTest.duration
-        });
-        done(checkAssertionCount());
-      });
     };
-
-    /** The number of assertions to expect in the current test case */
-    context.expect = function(n) {
-      if (!arguments.length) {
-        return expectedAssertions;
-      }
-      expectedAssertions = n;
-    };
-
-    // Deprecated since QUnit v1.9.0, but still used, e.g. by Backbone.
-    assert.raises = assert.throws
-
-    /**
-    * Checks to see if the assertion counts indicate a failure.
-    * Returns an Error object if it did, null otherwise;
-    */
-    var checkAssertionCount = function() {
-      var actualCount = config.current.assertions.length;
-      if(expectedAssertions > 0 && expectedAssertions != actualCount) {
-        return new Error("Expected "+ expectedAssertions +
-          " assertions but saw " + actualCount);
-      };
-      return null;
-    };
-
-    context.start = function(count) {
-      count = count || 1;
-      deferrals -= count;
-      if (deferrals === 0 && !checkingDeferrals) {
-        checkingDeferrals = true;
-        setTimeout(function() {
-          checkingDeferrals = false;
-          if (deferrals === 0 && currentDoneFn) {
-            currentDoneFn(checkAssertions());
-          }
-        }, 0);
-      } else if (deferrals < 0) {
-        throw new Error("cannot call start() when not stopped");
-      }
-    };
-
-    context.stop = function(count) {
-      count = count || 1;
-      deferrals += count;
-    };
-
-    function normalizeTestArgs(fn) {
-      return function(title, expect, test) {
-        if (typeof expect == "function") {
-          test = expect;
-          expect = 0;
-        }
-
-        return fn.call(this, title, expect, test);
-      };
-    }
-
-    function wrapTestFunction(test, wrapper) {
-      var result = function(done) {
-        return wrapper.call(this, test, done);
-      };
-      result.toString = test.toString.bind(test);
-      return result;
-    }
-
-    function addTest(title, expect, test) {
-      suites[0].addTest(new Test(title, wrapTestFunction(test, function(test, done) {
-        expectedAssertions = expect;
-        currentDoneFn = done;
-        context.stop();
-        if (firstTest) {
-          log("begin");
-          firstTest = false;
-        }
-        if (!inModule) {
-          setContext(this);
-        }
-        test.call(this, assert);
-        context.start();
-      })));
-    }
 
     /**
      * Describe a specification or test-case
@@ -2490,14 +2375,12 @@ var ui = function(suite) {
      * callback `test` acting as a thunk.
      */
     context.test = normalizeTestArgs(function(title, expect, test) {
-      addTest(title, expect, test);
-    });
-
-    context.asyncTest = normalizeTestArgs(function(title, expect, test) {
-      addTest(title, expect, wrapTestFunction(test, function(test, done) {
-        context.stop();
-        test.call(this, assert);
-      }));
+      //addTest(suites[0], title, expect, test);
+      var moduleSuite = suites[0];
+      var qTest = makeQTest(moduleSuite, title, expect, test);
+      suites.unshift(qTest);
+      test.call(qTest, assert);
+      suites.shift();
     });
 
   });

@@ -2222,8 +2222,22 @@ var Suite = Mocha.Suite;
 var Test = Mocha.Test;
 var QUnit = global.QUnit;
 var assert = QUnit.assert;
-var config = QUnit.config;
 var jsDump = QUnit.jsDump;
+
+function testContext(context) {
+  var config = QUnit.config;
+  if (arguments.length === 0) {
+    return config.current;
+  }
+  config.current = {
+    testEnvironment: context,
+    assertions: [],
+    expected: null
+  };
+  QUnit.current_testEnvironment = context;
+}
+
+testContext({});
 
 function normalizeTestArgs(fn) {
   return function(title, expect, test) {
@@ -2276,7 +2290,7 @@ function spy(object, methodName, handlers) {
 }
 
 function wrapAssert(qTest, qTestToStr, name, makeMessage) {
-  var assertions = config.current.assertions;
+  var assertions = testContext().assertions;
   var pushSpy;
   spy(assert, name, {
     // Custom assertions work by invoking `QUnit.push`. Because QUnit's
@@ -2294,6 +2308,12 @@ function wrapAssert(qTest, qTestToStr, name, makeMessage) {
 
       if (name === 'ok') {
         description = actual;
+      }
+
+      // If there is no explicit description for this assertion, simply use the
+      // assertion name.
+      if (!description) {
+        description = name;
       }
 
       testFn = function() {
@@ -2321,8 +2341,6 @@ function wrapAssert(qTest, qTestToStr, name, makeMessage) {
 function makeQTest(moduleSuite, title, expect, qTestFn) {
   var qTest = Suite.create(moduleSuite, title);
   var qTestToStr = qTestFn.toString.bind(qTestFn);
-
-  config.current = { assertions: [] };
 
   wrapAssert(qTest, qTestToStr, 'ok', function(actual) {
     return 'Expected ' + actual + ' to be okay';
@@ -2367,6 +2385,7 @@ var ui = function(suite) {
       if (suites.length > 1) suites.shift();
       var suite = Suite.create(suites[0], title);
       suites.unshift(suite);
+      suite.opts = opts;
     };
 
     /**
@@ -2378,9 +2397,32 @@ var ui = function(suite) {
       //addTest(suites[0], title, expect, test);
       var moduleSuite = suites[0];
       var qTest = makeQTest(moduleSuite, title, expect, test);
+      var assertions = {
+        passed: 0,
+        failed: 0
+      };
+      var opts = moduleSuite.opts;
       suites.unshift(qTest);
+
+      testContext(this);
+      QUnit.expect(expect);
+      if (opts && opts.setup) {
+        opts.setup.call(this, assert);
+      }
+
+      console.log(qTest);
       test.call(qTest, assert);
+
+      if (opts && opts.teardown) {
+        opts.teardown.call(this, assert);
+      }
+      var testCtx = testContext();
       suites.shift();
+      if (testCtx.expected && testCtx.expected !== testCtx.assertions.length) {
+        console.log(qTest);
+        qTest.bail();
+      }
+
     });
 
   });

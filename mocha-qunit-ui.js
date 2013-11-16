@@ -2287,7 +2287,7 @@ var ui = function(suite) {
     }
     var spied = obj[name] = function() {
       fn.apply(this, arguments);
-      return orig.apply(this, arguments);
+      return;// orig.apply(this, arguments);
     };
     spied.reset = function() {
       obj[name] = orig;
@@ -2296,6 +2296,12 @@ var ui = function(suite) {
   };
   var setLog = function(logDetails) {
     spy(QUnit, "push", function(result, actual, expected, message) {
+      config.current.assertions.push({
+        result: result,
+        actual: actual,
+        expected: expected,
+        message: message
+      });
       log("log", {
         name: logDetails.name,
         module: logDetails.module,
@@ -2306,6 +2312,15 @@ var ui = function(suite) {
       });
     });
     spy(assert, "ok", function(result, message) {
+      if (message === undefined) {
+        message = "Expected " + QUnit.jsDump.parse(result) + " to be ok";
+      }
+      config.current.assertions.push({
+        result: result,
+        actual: result,
+        expected: true,
+        message: message
+      });
       log("log", {
         name: logDetails.name,
         module: logDetails.module,

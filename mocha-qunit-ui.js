@@ -2594,6 +2594,9 @@ var ui = function(suite) {
       }));
     });
 
+    // Since QUnit allows tests to be defined outside of a module, immediately
+    // create a nameless module.
+    context.module('');
   });
 };
 
